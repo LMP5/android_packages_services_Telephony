@@ -34,7 +34,7 @@ public class TelephonyGlobals {
     private static TelephonyGlobals sInstance;
 
     /** The application context. */
-    private static  Context mContext;
+    private Context mContext;
 
     private TtyManager mTtyManager;
 
@@ -45,26 +45,20 @@ public class TelephonyGlobals {
      */
     public TelephonyGlobals(Context context) {
         mContext = context.getApplicationContext();
+        sInstance = this;
     }
 
-    public static synchronized TelephonyGlobals getInstance(Context context) {
-        if (sInstance == null) {
-            sInstance = new TelephonyGlobals(context);
-        }
-        return sInstance;
+    public static synchronized Context getApplicationContext() {
+        return sInstance != null ? sInstance.mContext : null;
     }
 
     public void onCreate() {
         // TODO: Make this work with Multi-SIM devices
-        Phone phone = PhoneFactory.getDefaultPhone();
-        if (phone != null) {
-            mTtyManager = new TtyManager(mContext, phone);
+        Phone defaultPhone = PhoneFactory.getDefaultPhone();
+        if (defaultPhone != null) {
+            mTtyManager = new TtyManager(mContext, defaultPhone);
         }
 
         TelecomAccountRegistry.getInstance(mContext).setupOnBoot();
-    }
-
-    public static Context getApplicationContext() {
-        return mContext;
     }
 }

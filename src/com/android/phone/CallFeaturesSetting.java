@@ -28,7 +28,10 @@ import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ResolveInfo;
+import android.content.res.Resources;
+import android.content.res.Resources.NotFoundException;
 import android.database.Cursor;
 import android.media.AudioManager;
 import android.media.RingtoneManager;
@@ -42,6 +45,7 @@ import android.preference.CheckBoxPreference;
 import android.preference.ListPreference;
 import android.preference.Preference;
 import android.preference.PreferenceActivity;
+import android.preference.PreferenceCategory;
 import android.preference.PreferenceManager;
 import android.preference.PreferenceScreen;
 import android.preference.SwitchPreference;
@@ -49,6 +53,8 @@ import android.provider.ContactsContract.CommonDataKinds;
 import android.provider.Settings;
 import android.telecom.TelecomManager;
 import android.telephony.PhoneNumberUtils;
+import android.telephony.SubscriptionInfo;
+import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
@@ -57,6 +63,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.ListAdapter;
+import android.widget.Toast;
 
 import com.android.internal.telephony.CallForwardInfo;
 import com.android.internal.telephony.CommandsInterface;
@@ -64,7 +71,7 @@ import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.util.BlacklistUtils;
 import com.android.phone.common.util.SettingsUtil;
-import com.android.phone.msim.SelectSubscription;
+import com.android.phone.msim.MSimCallFeaturesSubSetting;
 import com.android.phone.settings.AccountSelectionPreference;
 import com.android.services.telephony.sip.SipUtil;
 
@@ -194,7 +201,8 @@ public class CallFeaturesSetting extends PreferenceActivity
     private static final String PHONE_ACCOUNT_SETTINGS_KEY =
             "phone_account_settings_preference_screen";
 
-    private static final String BUTTON_SELECT_SUB_KEY  = "button_call_independent_serv";
+    private static final String BUTTON_INCALL_EVENTS_KEY = "button_show_ssn_key";
+    private static final String SIM_CATEGORY_KEY  = "sim_category_key";
 
     private Intent mContactListIntent;
 
@@ -254,6 +262,9 @@ public class CallFeaturesSetting extends PreferenceActivity
     private PreferenceScreen mButtonVideoCallPictureSelect;
     private Preference mVideoCallPreference;
 
+    // Call recording format
+    private static final String CALL_RECORDING_FORMAT = "call_recording_format";
+
     private EditPhoneNumberPreference mSubMenuVoicemailSettings;
 
     private Runnable mVoicemailRingtoneLookupRunnable;
@@ -283,6 +294,7 @@ public class CallFeaturesSetting extends PreferenceActivity
     private AccountSelectionPreference mDefaultOutgoingAccount;
     private boolean isSpeedDialListStarted = false;
     private PreferenceScreen mButtonBlacklist;
+    private ListPreference mCallRecordingFormat;
 
     private class VoiceMailProvider {
         public VoiceMailProvider(String name, Intent intent) {
@@ -649,6 +661,11 @@ public class CallFeaturesSetting extends PreferenceActivity
                 mChangingVMorFwdDueToProviderChange = true;
                 saveVoiceMailAndForwardingNumber(newProviderKey, newProviderSettings);
             }
+        } else if (preference == mCallRecordingFormat) {
+            int value = Integer.valueOf((String) objValue);
+            int index = mCallRecordingFormat.findIndexOfValue((String) objValue);
+            Settings.System.putInt(getContentResolver(), Settings.System.CALL_RECORDING_FORMAT, value);
+            mCallRecordingFormat.setSummary(mCallRecordingFormat.getEntries()[index]);
         }
         // always let the preference setting proceed.
         return true;
@@ -1564,6 +1581,16 @@ public class CallFeaturesSetting extends PreferenceActivity
     @Override
     protected void onCreate(Bundle icicle) {
         super.onCreate(icicle);
+        if (DBG) log("onCreate: Intent is " + getIntent());
+
+        // Make sure we are running as the primary user.
+        if (UserHandle.myUserId() != UserHandle.USER_OWNER) {
+            Toast.makeText(this, R.string.call_settings_primary_user_only,
+                    Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+
         mPhone = PhoneGlobals.getPhone();
         mAudioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
 
@@ -1580,7 +1607,7 @@ public class CallFeaturesSetting extends PreferenceActivity
                             mPhone.getContext(),
                             mVoicemailRingtoneLookupComplete,
                             RingtoneManager.TYPE_NOTIFICATION,
-                            mVoicemailNotificationRingtone,
+                            mVoicemailNotificationRingtone.getKey(),
                             MSG_UPDATE_VOICEMAIL_RINGTONE_SUMMARY);
                 }
             }
@@ -1589,8 +1616,8 @@ public class CallFeaturesSetting extends PreferenceActivity
         // Show the voicemail preference in onResume if the calling intent specifies the
         // ACTION_ADD_VOICEMAIL action.
         mShowVoicemailPreference = (icicle == null) &&
-                getIntent().getAction().equals(ACTION_ADD_VOICEMAIL);
-    }
+                TextUtils.equals(getIntent().getAction(), ACTION_ADD_VOICEMAIL);
+   }
 
     private void initPhoneAccountPreferences() {
         mPhoneAccountSettingsPreference = findPreference(PHONE_ACCOUNT_SETTINGS_KEY);
@@ -1623,6 +1650,30 @@ public class CallFeaturesSetting extends PreferenceActivity
         if (DBG) log("onResume(). isMSim = " + isMsim);
         if (isMsim) {
             addPreferencesFromResource(R.xml.call_feature_setting_msim);
+
+            PreferenceCategory simCategory = (PreferenceCategory) findPreference(SIM_CATEGORY_KEY);
+            int numPhones = TelephonyManager.getDefault().getPhoneCount();
+            SubscriptionManager subscriptionManager = SubscriptionManager.from(this);
+
+            for (int i = 0; i < numPhones; i++) {
+                SubscriptionInfo sir =
+                        subscriptionManager.getActiveSubscriptionInfoForSimSlotIndex(i);
+                Preference pref = new Preference(this);
+
+                pref.setTitle(getString(R.string.sim_card_title, i + 1));
+                if (sir != null) {
+                    pref.setSummary(sir.getDisplayName());
+
+                    Intent intent = new Intent(this, MSimCallFeaturesSubSetting.class);
+                    SubscriptionManager.putPhoneIdAndSubIdExtra(intent, i, sir.getSubscriptionId());
+                    pref.setIntent(intent);
+
+                    simCategory.addPreference(pref);
+                } else {
+                    pref.setSummary(R.string.sim_card_summary_empty);
+                    pref.setEnabled(false);
+                }
+            }
         } else {
             addPreferencesFromResource(R.xml.call_feature_setting);
         }
@@ -1681,8 +1732,9 @@ public class CallFeaturesSetting extends PreferenceActivity
             mVoicemailNotificationVibrate =
                     (SwitchPreference) findPreference(BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_KEY);
             initVoiceMailProviders();
-        }
 
+        mCallRecordingFormat = (ListPreference) findPreference(CALL_RECORDING_FORMAT);
+        }
 
         if (mButtonDTMF != null) {
             if (getResources().getBoolean(R.bool.dtmf_type_enabled)) {
@@ -1734,7 +1786,22 @@ public class CallFeaturesSetting extends PreferenceActivity
             }
         }
 
-        if (!getResources().getBoolean(R.bool.world_phone) && (!isMsim)) {
+        if (mCallRecordingFormat != null) {
+            int format = Settings.System.getInt(getContentResolver(), Settings.System.CALL_RECORDING_FORMAT, 0);
+            mCallRecordingFormat.setValue(String.valueOf(format));
+            mCallRecordingFormat.setSummary(mCallRecordingFormat.getEntry());
+            mCallRecordingFormat.setOnPreferenceChangeListener(this);
+        }
+
+        boolean isWorldPhone = getResources().getBoolean(R.bool.world_phone);
+        if (!isWorldPhone && mPhone.getPhoneType() != PhoneConstants.PHONE_TYPE_GSM) {
+            Preference inCallEvents = prefSet.findPreference(BUTTON_INCALL_EVENTS_KEY);
+            if (inCallEvents != null) {
+                prefSet.removePreference(inCallEvents);
+            }
+        }
+
+        if (!isWorldPhone && !isMsim) {
             Preference options = prefSet.findPreference(BUTTON_CDMA_OPTIONS);
             if (options != null) {
                 prefSet.removePreference(options);
@@ -1745,20 +1812,29 @@ public class CallFeaturesSetting extends PreferenceActivity
             }
 
             int phoneType = mPhone.getPhoneType();
-            if (phoneType == PhoneConstants.PHONE_TYPE_CDMA) {
-                Preference fdnButton = prefSet.findPreference(BUTTON_FDN_KEY);
-                if (fdnButton != null) {
-                    prefSet.removePreference(fdnButton);
-                }
-                if (!getResources().getBoolean(R.bool.config_voice_privacy_disable)) {
-                    addPreferencesFromResource(R.xml.cdma_call_privacy);
-                }
-            } else if (phoneType == PhoneConstants.PHONE_TYPE_GSM) {
-                if (getResources().getBoolean(R.bool.config_additional_call_setting)) {
-                    addPreferencesFromResource(R.xml.gsm_umts_call_options);
+            Preference fdnButton = prefSet.findPreference(BUTTON_FDN_KEY);
+            boolean shouldHideCarrierSettings = Settings.Global.getInt(
+                    getContentResolver(), Settings.Global.HIDE_CARRIER_NETWORK_SETTINGS, 0) == 1;
+            if (shouldHideCarrierSettings) {
+                prefSet.removePreference(fdnButton);
+                if (mButtonDTMF != null) {
+                    prefSet.removePreference(mButtonDTMF);
                 }
             } else {
-                throw new IllegalStateException("Unexpected phone type: " + phoneType);
+                if (phoneType == PhoneConstants.PHONE_TYPE_CDMA) {
+                    if (fdnButton != null) {
+                        prefSet.removePreference(fdnButton);
+                    }
+                    if (!getResources().getBoolean(R.bool.config_voice_privacy_disable)) {
+                        addPreferencesFromResource(R.xml.cdma_call_privacy);
+                    }
+                } else if (phoneType == PhoneConstants.PHONE_TYPE_GSM) {
+                    if (getResources().getBoolean(R.bool.config_additional_call_setting)) {
+                        addPreferencesFromResource(R.xml.gsm_umts_call_options);
+                    }
+                } else {
+                    throw new IllegalStateException("Unexpected phone type: " + phoneType);
+                }
             }
         }
 
@@ -1786,14 +1862,6 @@ public class CallFeaturesSetting extends PreferenceActivity
 
         // Blacklist screen - Needed for setting summary
         mButtonBlacklist = (PreferenceScreen) prefSet.findPreference(BUTTON_BLACKLIST);
-
-        PreferenceScreen selectSub = (PreferenceScreen) findPreference(BUTTON_SELECT_SUB_KEY);
-        if (selectSub != null) {
-            Intent intent = selectSub.getIntent();
-            intent.putExtra(SelectSubscription.PACKAGE, "com.android.phone");
-            intent.putExtra(SelectSubscription.TARGET_CLASS,
-                    "com.android.phone.msim.MSimCallFeaturesSubSetting");
-        }
 
         if (mMwiNotification != null) {
             int mwiNotification = Settings.System.getInt(getContentResolver(),
@@ -1865,13 +1933,30 @@ public class CallFeaturesSetting extends PreferenceActivity
     public static boolean migrateVoicemailVibrationSettingsIfNeeded(SharedPreferences prefs,
             int phoneId) {
         if (!prefs.contains(BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_KEY + phoneId)) {
-            String vibrateWhen = prefs.getString(
-                    BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_WHEN_KEY + phoneId,
-                    VOICEMAIL_VIBRATION_NEVER);
-            // If vibrateWhen is always, then voicemailVibrate should be True.
-            // otherwise if vibrateWhen is "only in silent mode", or "never", then
-            // voicemailVibrate = False.
-            boolean voicemailVibrate = vibrateWhen.equals(VOICEMAIL_VIBRATION_ALWAYS);
+            boolean voicemailVibrate = false;
+            // If phoneId based setting is not found, try without phoneId.
+            if (!prefs.contains(BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_KEY)) {
+                String vibrateWhen = VOICEMAIL_VIBRATION_NEVER;
+                // If BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_KEY is not found,
+                // try BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_WHEN_KEY with and without phoneId.
+                if (!prefs.contains(BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_WHEN_KEY + phoneId)) {
+                    vibrateWhen = prefs.getString(BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_WHEN_KEY,
+                            VOICEMAIL_VIBRATION_NEVER);
+                } else {
+                    vibrateWhen = prefs.getString(
+                            BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_WHEN_KEY + phoneId,
+                            VOICEMAIL_VIBRATION_NEVER);
+                }
+                // If vibrateWhen is always, then voicemailVibrate should be True.
+                // otherwise if vibrateWhen is "only in silent mode", or "never", then
+                // voicemailVibrate = False.
+                voicemailVibrate = vibrateWhen.equals(VOICEMAIL_VIBRATION_ALWAYS);
+            } else {
+                voicemailVibrate = prefs.getBoolean(BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_KEY,
+                        false);
+            }
+
+            // Save the vibrate setting in phoneId based BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_KEY
             final SharedPreferences.Editor editor = prefs.edit();
             editor.putBoolean(BUTTON_VOICEMAIL_NOTIFICATION_VIBRATE_KEY + phoneId,
                     voicemailVibrate);

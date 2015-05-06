@@ -25,7 +25,7 @@
             android:targetPackage="com.android.phone"
             android:targetClass="com.android.phone.settings.PhoneAccountSettingsActivity"/>
 
-    </PreferenceScreen>>
+    </PreferenceScreen>
 
     <PreferenceScreen
         android:key="button_voicemail_category_key"
@@ -116,6 +116,20 @@
         android:persistent="true"
         android:summary="@string/hac_mode_summary"/>
 
+    <SwitchPreference
+        android:key="button_show_ssn_key"
+        android:title="@string/show_ssn_label"
+        android:defaultValue="false"
+        android:summary="@string/show_ssn_summary" />
+
+    <ListPreference
+        android:key="call_recording_format"
+        android:title="@string/call_recording_format"
+        android:summary="%s"
+        android:entries="@array/call_recording_encoder_entries"
+        android:entryValues="@array/call_recording_encoder_values"
+        android:persistent="false" />
+
     <ListPreference
         android:key="button_dtmf_settings"
         android:title="@string/dtmf_tones_title"
@@ -145,16 +159,6 @@
             android:targetPackage="com.android.phone"
             android:targetClass="com.android.phone.CdmaCallOptions"/>
 
-    </PreferenceScreen>
-
-    <PreferenceScreen
-        android:key="ims_account_settings_key"
-        android:title="@string/ims_accounts_title"
-        android:persistent="false">
-
-        <intent android:action="android.intent.action.MAIN"
-            android:targetPackage="com.android.phone"
-            android:targetClass="com.android.phone.ims.ImsEditor" />
     </PreferenceScreen>
 
     <PreferenceScreen
